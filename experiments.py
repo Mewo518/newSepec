@@ -19,7 +19,7 @@ class ExperimentRunner:
 
     def safe_bleu(self, reference: str, generated: str) -> float:
         """带异常处理的BLEU计算"""
-        from nltk.translate.bleu_score import sentence_bleu
+        from nltk.translate.bleu_score import sentence_bleu  #nltk：自然语言处理工具包，提供文本处理、分词、句子拆分等功能
         try:
             return sentence_bleu([reference.split()], generated.split(),
                                  weights=(0.25, 0.25, 0.25, 0.25))
@@ -28,7 +28,7 @@ class ExperimentRunner:
 
     def safe_rouge(self, reference: str, generated: str) -> float:
         """带异常处理的ROUGE计算"""
-        from rouge import Rouge
+        from rouge import Rouge  #rouge：用于计算 ROUGE 指标的工具包，常用于评估生成文本的质量
         try:
             return Rouge().get_scores(generated, reference)[0]["rouge-l"]["f"]
         except:

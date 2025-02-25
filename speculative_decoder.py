@@ -30,6 +30,7 @@ class BaseSpeculativeDecoder:
             max_length=max_length,
             pad_token_id=self.tokenizer.eos_token_id,
             temperature=0.7,
+            do_sample=True,
             top_k=50
         )
 

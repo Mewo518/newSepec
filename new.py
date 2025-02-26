@@ -12,7 +12,7 @@ from speculative_decoder import SpeculativeDecoder
 class Benchmark:
     """基准方法：直接使用大模型生成"""
 
-    def __init__(self, model: str = "gpt2-medium"):
+    def __init__(self, model: str = "gpt2-xl"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = AutoModelForCausalLM.from_pretrained(model).to(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(model)
@@ -29,7 +29,7 @@ class AdaptiveSpeculativeDecoder:
     """基于输入复杂度动态调整的自适应投机推理框架"""
 
     def __init__(self,
-                 large_model: str = "gpt2-medium",  # 大模型（验证模型）
+                 large_model: str = "gpt2-xl",  # 大模型（验证模型）
                  draft_pool: List[str] = ["gpt2", "gpt2-medium"],  # Draft模型池
                  device: str = "cuda" if torch.cuda.is_available() else "cpu"):
 
@@ -53,7 +53,7 @@ class AdaptiveSpeculativeDecoder:
         self.complexity_thresholds = {
             'low': {'model': 'gpt2', 'gamma': 5},
             'medium': {'model': 'gpt2-medium', 'gamma': 3},
-            'high': {'model': 'gpt2-medium', 'gamma': 1}
+            'high': {'model': 'gpt2', 'gamma': 1}
         }
 
     def _evaluate_complexity(self, input_ids: torch.Tensor) -> str:
@@ -83,6 +83,7 @@ class AdaptiveSpeculativeDecoder:
 
         # 选择Draft模型
         draft_model = self.draft_models[config['model']]
+        # print(draft_model)
         gamma = config['gamma']
 
         # 生成候选

@@ -50,7 +50,7 @@ class SpeculativeDecoder:
     """标准投机解码实现（小模型起草 + 大模型验证）"""
 
     def __init__(self,
-                 large_model: str = "gpt2-medium",
+                 large_model: str = "gpt2-xl",
                  draft_model: str = "gpt2",
                  gamma: int = 5,  # 最大候选长度
                  device: str = "cuda" if torch.cuda.is_available() else "cpu"):

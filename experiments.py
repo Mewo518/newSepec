@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from pathlib import Path
 from typing import List, Dict
-from speculative_decoder import BaseSpeculativeDecoder, AdvancedSpeculativeDecoder
+from speculative_decoder import BaseSpeculativeDecoder, AdvancedSpeculativeDecoder, SpeculativeDecoder
 
 
 class ExperimentRunner:
@@ -40,7 +40,8 @@ class ExperimentRunner:
 
         for text in tqdm(self.dataset[:num_samples], desc="Processing"):
             # 基线方法
-            baseline = BaseSpeculativeDecoder()
+            # baseline = BaseSpeculativeDecoder()
+            baseline = SpeculativeDecoder()
             baseline_output = baseline.generate(text, max_length=50)
             self.metrics["baseline"].append({
                 "bleu": self.safe_bleu(text, baseline_output),

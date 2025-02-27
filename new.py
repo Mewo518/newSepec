@@ -1,16 +1,14 @@
 import torch
 import time
 import numpy as np
+from torch.sparse import softmax
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List, Dict, Tuple
 import matplotlib.pyplot as plt
-
-from speculative_decoder import SpeculativeDecoder
-
-
+from torch.nn import functional as F
 class Benchmark:
-    """基准方法：直接使用大模型生成"""
+    """基准方法：直接使用大模型生成（贪婪解码，遇到 eos_token 或达到最大长度终止）"""
 
     def __init__(self, model: str = "gpt2-xl"):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -20,16 +18,114 @@ class Benchmark:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
     def generate(self, input_text: str, max_length: int = 100) -> str:
+        # 对输入进行编码
         input_ids = self.tokenizer.encode(input_text, return_tensors="pt").to(self.device)
-        outputs = self.model.generate(input_ids, max_length=max_length)
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        eos_token_id = self.tokenizer.eos_token_id
+
+        generated_ids = input_ids.clone()
+        # 循环生成后续 token，直至达到最大长度或生成 eos_token
+        for _ in range(max_length - generated_ids.shape[1]):
+            # 直接调用模型，获取 logits
+            outputs = self.model(generated_ids)
+            # 取最后一个 token 的 logits，并采用贪婪解码（取最大概率的 token）
+            next_token_logits = outputs.logits[:, -1, :]
+            next_token_id = torch.argmax(next_token_logits, dim=-1).unsqueeze(-1)
+            # 拼接生成的 token
+            generated_ids = torch.cat([generated_ids, next_token_id], dim=-1)
+            # 如果生成了 eos_token，则提前结束
+            if next_token_id.item() == eos_token_id:
+                break
+        print(self.tokenizer.decode(generated_ids[0], skip_special_tokens=True))
+        return self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+
+class BaseSpeculativeDecoder:
+    """原始投机推理方法（基线），采用增量生成：
+    - 小模型（draft_model）一次生成 gamma 个候选 token（贪婪解码）
+    - 大模型验证每个 token 的正确性
+    - 终止条件为达到最大长度或生成 eos_token
+    """
+
+    def __init__(self,
+                 large_model: str = "gpt2-xl",
+                 draft_model: str = "gpt2",
+                 device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+        self.device = device
+        self.large_model = AutoModelForCausalLM.from_pretrained(large_model).to(device)
+        self.draft_model = AutoModelForCausalLM.from_pretrained(draft_model).to(device)
+        self.tokenizer = AutoTokenizer.from_pretrained(large_model)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.latency_stats = {"total": 0}
+
+    def generate(self, input_text: str, max_length: int = 100, gamma: int = 5) -> str:
+        """
+        增量生成：
+        - 草稿模型每次生成 gamma 个 token（贪婪解码）
+        - 逐个 token 验证：对于草稿生成的每个 token，
+          用大模型验证该 token 是否正确，若验证失败则采用大模型预测结果
+        - 生成终止条件：达到 max_length 或生成 eos_token
+        """
+        # 编码输入
+        input_ids = self.tokenizer.encode(input_text, return_tensors="pt").to(self.device)
+        output_ids=input_ids
+        eos_token_id = self.tokenizer.eos_token_id
+
+        # 当生成序列未达到最大长度且最后一个 token 不是 eos_token 时，继续生成
+        while output_ids.shape[1] < max_length:
+            # 小模型一次生成 gamma 个候选 token，采用贪婪解码
+            draft_outputs = self.draft_model.generate(
+                input_ids,
+                max_new_tokens=gamma,
+                do_sample=False,  # 贪婪解码
+                pad_token_id=self.tokenizer.eos_token_id,
+                output_scores=True,
+                return_dict_in_generate=True
+            )
+            # softmax操作
+            all_scores = torch.stack(draft_outputs.scores, dim=1)
+            draft_logits = F.softmax(all_scores, dim=2)
+
+            with torch.no_grad():  # 大模型
+                target_probs = self.large_model(draft_outputs.sequences).logits
+            target_logits=F.softmax(target_probs, dim=2)
+            r = torch.rand(1, device=self.device)  # 生成随机数r，判断是否接受该token，是投机采样的关键参数
+            #  接受/拒绝采样
+            accepted = []
+
+            for i in range(gamma):
+                current_pos = input_ids.shape[1] + i
+                draft_token = draft_outputs.sequences[0, current_pos] #当前判断的token id
+                # draft_token_tensor = draft_token.unsqueeze(0)
+                # 获取两个模型的概率估计
+
+                q = draft_logits[0, i,draft_token]
+                p = target_logits[0, current_pos - 1, draft_token]
+                # 接受概率
+                accept_prob = min(p / q, 1.0)
+                if r <= accept_prob:
+                    accepted.append(draft_token)
+                    # accepted = torch.cat(accepted, draft_token_tensor)
+                else:
+                    # 拒绝时用目标模型重新采样
+                    adjusted_probs = target_logits[0,  current_pos - 1] - draft_logits[0, i]
+                    new_token=torch.argmax(adjusted_probs, dim=-1).unsqueeze(-1)
+                    break
+            if i==gamma-1:
+                final_prob = target_logits[0, -1]
+                new_token=torch.argmax(final_prob, dim=-1).unsqueeze(-1)
+            accepted.append(new_token)
+            #转为tensor
+            accepted_tensor = torch.tensor(accepted).unsqueeze(0)
+            output_ids=torch.cat([input_ids, accepted_tensor],dim=-1)
+        print(self.tokenizer.decode(output_ids[0], skip_special_tokens=True))
+        return self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
 # ====================== 自适应投机推理框架 ======================
 class AdaptiveSpeculativeDecoder:
     """基于输入复杂度动态调整的自适应投机推理框架"""
 
     def __init__(self,
-                 large_model: str = "gpt2-xl",  # 大模型（验证模型）
+                 large_model: str = "gpt2-medium",  # 大模型（验证模型）
                  draft_pool: List[str] = ["gpt2", "gpt2-medium"],  # Draft模型池
                  device: str = "cuda" if torch.cuda.is_available() else "cpu"):
 
@@ -189,8 +285,9 @@ class ExperimentSystem:
     def run_experiments(self, num_samples=20):
         """运行对比实验"""
         methods = {
-            "Baseline (Large Model)": Benchmark(model="gpt2-medium"),
-            "Standard Speculative": SpeculativeDecoder(),
+
+            "Standard Speculative": BaseSpeculativeDecoder(),
+            "Baseline (Large Model)": Benchmark(model="gpt2-xl"),
             "Our Adaptive Method": AdaptiveSpeculativeDecoder()
         }
 

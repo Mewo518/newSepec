@@ -7,6 +7,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List, Dict, Tuple
 import matplotlib.pyplot as plt
 from torch.nn import functional as F
+
 class Benchmark:
     """基准方法：直接使用大模型生成（贪婪解码，遇到 eos_token 或达到最大长度终止）"""
 
@@ -116,7 +117,9 @@ class BaseSpeculativeDecoder:
             accepted.append(new_token)
             #转为tensor
             accepted_tensor = torch.tensor(accepted).unsqueeze(0)
-            output_ids=torch.cat([input_ids, accepted_tensor],dim=-1)
+            accepted_tensor = accepted_tensor.to(input_ids.device)
+
+            output_ids=torch.cat([output_ids, accepted_tensor],dim=-1)
         print(self.tokenizer.decode(output_ids[0], skip_special_tokens=True))
         return self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
 
@@ -125,7 +128,8 @@ class AdaptiveSpeculativeDecoder:
     """基于输入复杂度动态调整的自适应投机推理框架"""
 
     def __init__(self,
-                 large_model: str = "gpt2-medium",  # 大模型（验证模型）
+                 large_model: str = "gpt2-xl",  # 大模型（验证模型）
+                 # large_model: str = "gpt2-medium",  # 大模型（验证模型）
                  draft_pool: List[str] = ["gpt2", "gpt2-medium"],  # Draft模型池
                  device: str = "cuda" if torch.cuda.is_available() else "cpu"):
 
@@ -148,8 +152,8 @@ class AdaptiveSpeculativeDecoder:
         # 自适应参数
         self.complexity_thresholds = {
             'low': {'model': 'gpt2', 'gamma': 5},
-            'medium': {'model': 'gpt2-medium', 'gamma': 3},
-            'high': {'model': 'gpt2', 'gamma': 1}
+            'medium': {'model': 'gpt2', 'gamma': 3},
+            'high': {'model': 'gpt2-medium', 'gamma': 1}
         }
 
     def _evaluate_complexity(self, input_ids: torch.Tensor) -> str:
@@ -285,10 +289,10 @@ class ExperimentSystem:
     def run_experiments(self, num_samples=20):
         """运行对比实验"""
         methods = {
-
+            "Our Adaptive Method": AdaptiveSpeculativeDecoder(),
             "Standard Speculative": BaseSpeculativeDecoder(),
-            "Baseline (Large Model)": Benchmark(model="gpt2-xl"),
-            "Our Adaptive Method": AdaptiveSpeculativeDecoder()
+            "Baseline (Large Model)": Benchmark(model="gpt2-xl")
+
         }
 
         for text in tqdm(self.dataset[:num_samples]):
